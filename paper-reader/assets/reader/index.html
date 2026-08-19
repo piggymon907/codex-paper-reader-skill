@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper Reader</title>
+  <link rel="stylesheet" href="reader.css">
+  <script src="data.js"></script>
+  <script src="validation-status.js"></script>
+  <script src="run-status.js"></script>
+  <script src="reader.js" defer></script>
+</head>
+<body>
+  <header class="reader-toolbar">
+    <div class="reader-identity">
+      <strong id="paperTitle">论文全文阅读</strong>
+      <span id="pageStatus" class="muted"></span>
+    </div>
+    <div class="toolbar-groups">
+      <div class="control-group view-switcher" aria-label="阅读器视图">
+        <button id="readingViewMode" type="button" class="control active" aria-pressed="true">阅读模式</button>
+        <button id="figureViewMode" type="button" class="control" aria-pressed="false">图解模式</button>
+        <button id="formulaViewMode" type="button" class="control" aria-pressed="false">公式精讲</button>
+      </div>
+      <div id="readingToolbar" class="toolbar-groups reading-toolbar">
+        <div class="control-group" aria-label="阅读模式语言">
+          <button id="originalMode" type="button" class="control active" aria-pressed="true">原文</button>
+          <button id="bilingualMode" type="button" class="control" aria-pressed="false">双语</button>
+        </div>
+        <div class="control-group" aria-label="页面导航">
+          <button id="previousPage" type="button" class="control" aria-label="上一页">←</button>
+          <label class="select-label">页
+            <select id="pageSelect" aria-label="选择页面"></select>
+          </label>
+          <button id="nextPage" type="button" class="control" aria-label="下一页">→</button>
+        </div>
+        <label id="zoomControl" class="select-label">缩放
+          <select id="zoomSelect" aria-label="页面缩放">
+            <option value="80">80%</option>
+            <option value="100" selected>100%</option>
+            <option value="125">125%</option>
+            <option value="150">150%</option>
+          </select>
+        </label>
+      </div>
+      <a id="sourcePdfLink" class="control link-control" href="assets/source.pdf" target="_blank" rel="noopener">打开原始 PDF（当前页）</a>
+    </div>
+  </header>
+
+  <main>
+    <section id="readingWorkspace" class="reader-grid" aria-label="论文阅读模式">
+      <aside class="navigation-panel" aria-label="论文导航">
+        <section>
+          <h2>论文目录</h2>
+          <nav id="sectionList" class="section-list"></nav>
+        </section>
+        <section>
+          <h2>标注显示</h2>
+          <button id="markerMasterToggle" type="button" class="filter-master" aria-pressed="true">隐藏全部标注</button>
+          <div id="markerFilters" class="filter-list"></div>
+        </section>
+        <section class="source-warning">
+          <h2>使用边界</h2>
+          <p>正式引用、关键公式和重要结论必须回到原始 PDF 核对。双语文字是阅读辅助，不是版式忠实副本。</p>
+          <div id="verificationSummary" class="verification-summary" aria-label="验证范围"></div>
+        </section>
+        <section class="run-record-section">
+          <details class="run-metrics-details">
+            <summary id="runMetricsSummary">生成概况</summary>
+            <div id="runMetrics" class="run-metrics" aria-label="本次阅读器生成概况"></div>
+          </details>
+        </section>
+      </aside>
+
+      <section class="paper-panel" aria-label="论文页面">
+        <div id="translationStatus" class="translation-status" hidden></div>
+        <div id="originalView" class="original-view">
+          <div id="pageScroller" class="page-scroller">
+            <div id="pageCanvas" class="page-canvas">
+              <img id="pageImage" alt="当前论文页面">
+              <div id="markerLayer" class="marker-layer" aria-label="原文标注"></div>
+            </div>
+          </div>
+        </div>
+        <div id="bilingualView" class="bilingual-view" hidden></div>
+      </section>
+
+      <aside id="analysisPanel" class="analysis-panel" aria-label="阅读辅助">
+        <div class="analysis-heading-row">
+          <div>
+            <span id="analysisCategory" class="category-label">本页导读</span>
+            <h2 id="analysisTitle">第 1 页</h2>
+          </div>
+          <button id="backToPage" type="button" class="back-to-page" hidden>← 返回本页导读</button>
+        </div>
+        <div id="analysisContent" class="analysis-content"></div>
+        <section class="context-question">
+          <button id="questionToggle" type="button" class="question-action question-action-wide">针对本页提问</button>
+        </section>
+      </aside>
+    </section>
+
+    <section id="explainerWorkspace" class="explainer-workspace" aria-label="图表与公式精讲" hidden>
+      <div class="explainer-toolbar-row">
+        <div>
+          <span id="explainerCategory" class="category-label">图表讲解</span>
+          <h1 id="explainerTitle">当前讲解</h1>
+          <p id="explainerLocator" class="muted"></p>
+        </div>
+        <div class="explainer-header-actions">
+          <button id="openInReading" type="button" class="secondary-action">回到原文位置</button>
+          <button id="questionWhole" type="button" class="question-action">针对本图提问</button>
+          <button id="experimentalDataAction" type="button" class="experimental-data-action" hidden>查实验数据来源</button>
+        </div>
+      </div>
+
+      <nav id="explainerNavigation" class="explainer-navigation" aria-label="图表或公式预览"></nav>
+
+      <article class="explainer-card">
+        <div id="explainerSourceFrame" class="source-crop-frame">
+          <canvas id="explainerSourceCanvas" class="source-crop-canvas" aria-label="原始 PDF 裁切"></canvas>
+          <button id="openCropLarge" type="button" class="crop-enlarge">放大原始裁切</button>
+        </div>
+        <section id="explainerTakeaway" class="quick-takeaway"></section>
+        <nav id="explainerSectionNav" class="explainer-section-nav" aria-label="本项讲解目录"></nav>
+        <div id="explainerContent" class="explainer-content"></div>
+      </article>
+    </section>
+  </main>
+
+  <section id="questionComposer" class="question-sheet" hidden aria-label="上下文提问">
+    <div class="question-sheet-card">
+      <div class="question-sheet-heading">
+        <div>
+          <span class="category-label">上下文提问</span>
+          <h2>把当前证据一起发给 AI</h2>
+        </div>
+        <button id="cancelQuestion" type="button" class="text-action">关闭</button>
+      </div>
+      <p id="questionContext" class="question-context"></p>
+      <textarea id="questionInput" rows="2" placeholder="输入你的问题……"></textarea>
+      <div class="question-actions">
+        <button id="askButton" type="button" class="primary-action">发送到当前任务</button>
+      </div>
+      <p id="questionStatus" class="muted" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <dialog id="cropDialog" class="crop-dialog">
+    <button id="closeCropDialog" type="button" class="crop-dialog-close">关闭</button>
+    <canvas id="cropDialogCanvas" aria-label="放大的原始 PDF 裁切"></canvas>
+  </dialog>
+
+  <noscript>此阅读器需要启用 JavaScript。</noscript>
+</body>
+</html>

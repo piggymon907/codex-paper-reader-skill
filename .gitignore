@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+
+# Paper Reader build and test artifacts
+*.pdf
+*-paper-reader-v*/
+reader-data.json
+run_manifest.json
+validation-report.json
+reader_notes.json
+paper_index.json
+translations.json
+
+# Local workspace folders
+work/
+outputs/
+tests/

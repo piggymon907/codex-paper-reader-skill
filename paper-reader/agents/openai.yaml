@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Reader"
+  short_description: "Traceable PDF reading with figures, formulas, and evidence"
+  default_prompt: "Use $paper-reader to build a source-bound scientific PDF reader with page overviews, complete figure explanations, formula teaching, contextual questions, and experimental-data provenance prompts only where relevant."
