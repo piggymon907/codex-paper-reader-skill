@@ -4,7 +4,7 @@ English | [简体中文](README_zh-CN.md)
 
 `paper-reader` builds a local, traceable reader for scientific PDFs. It keeps the rendered PDF page as the visual source of truth and adds page overviews, coordinate-bound annotations, detailed figure/table teaching, formula explanations, optional page-scoped Chinese translations, and context-rich follow-up questions.
 
-Current release: **2.4.0 (beta)**
+Current release: **2.7.1 (beta)**
 
 > This project is an independent community Skill for Codex. It is not an official OpenAI project.
 
@@ -19,6 +19,14 @@ Current release: **2.4.0 (beta)**
 - Shows an optional **查实验数据来源** action only when a reviewed marker actually uses experimental measurements or has a specific unresolved experimental-data lead.
 
 The experimental-data action does not automatically browse or download anything during reader construction. When selected, it prepares a focused follow-up that excludes simulations, theoretical calculations, model outputs, code, and literature-only parameters.
+
+## What changed in 2.7.1
+
+- Uses one source-bound teaching object for both the reading sidebar and the expanded figure/formula view, avoiding duplicate generation.
+- Applies a standard/full teaching audit during the first explanation pass and repairs only failed objects.
+- Records resumable checkpoints, coarse wall-clock analysis milestones, targeted-revision time, and known model/run settings without adding another model pass.
+- Keeps per-paper browser QA to a short content/layout smoke test; full UI regression is reserved for interface or schema changes.
+- Reports audit-trigger and teaching-length distributions for diagnosis only; they are not scientific-quality scores or hard word-count gates.
 
 ## Install
 
@@ -64,7 +72,7 @@ For an existing reader, a page-scoped translation request uses the faster transl
 A normal build creates a paper-specific directory such as:
 
 ```text
-Paper-Title-paper-reader-v2.4.0/
+Paper-Title-paper-reader-v2.7.1/
 ```
 
 Open its `index.html` in a local browser. The output is static and portable as long as the complete directory is kept together.

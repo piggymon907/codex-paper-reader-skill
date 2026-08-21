@@ -1,15 +1,24 @@
 # Paper Reader data contract
 
+- [Build identity](#build-identity)
+- [Run tracking and recovery](#run-tracking-and-recovery)
+- [Coordinates](#coordinates)
+- [Notes and teaching fields](#notes)
+- [Teaching-audit artifact](#teaching-audit-artifact)
+- [Visual coverage](#visual-coverage)
+- [Sections](#sections)
+- [Translations](#translations)
+
 ## Build identity
 
-Release `2.4.0` writes the following immutable build identity into `run_manifest.json`:
+Release `2.7.1` writes the following immutable build identity into `run_manifest.json`:
 
 ```json
 {
   "generator": {
     "skill_name": "paper-reader",
-    "skill_version": "2.4.0",
-    "builder_version": "2.4.0"
+    "skill_version": "2.7.1",
+    "builder_version": "2.7.1"
   },
   "text_quality_at_build": {
     "long_alpha_runs": 0,
@@ -24,6 +33,33 @@ After validation, the manifest also records `validation.validator_version`, vali
 status, warning/error counts, and the validator's observed text-quality counts. Treat a
 missing or different release identity as a validation failure rather than silently applying
 new quality rules to an old package.
+
+## Run tracking and recovery
+
+An initialized full build keeps `run-state.json` and append-only `run-events.jsonl`. Store
+only input file names and SHA-256 values, never absolute paths. The state identity includes the
+input hash, Skill version, and schema version; a mismatch invalidates reuse and requires a new
+work directory.
+
+Each stage records status, attempt, UTC start/end, wall-clock elapsed seconds, error count, and
+warning count. Wall-clock time may include waiting, a paused task, or a reconnect gap. It is not
+model-compute time. A host reconnect is not recorded as such unless the host exposes that event.
+
+When known, `run_context` records the model, reasoning effort, Fast state, translation scope, and
+artifact reuse mode. Unknown values remain `null`; a changed context is appended to
+`run_context_history`. Existing script boundaries also record content-analysis milestones, from
+which the manifest derives coarse non-overlapping wall-clock segments. These local records do not
+add a second content pass and do not identify whether an unobserved gap was model work, waiting,
+or reconnection.
+
+`targeted_revision` records time between a failed teaching audit or preflight and the next local
+retry boundary. Re-running evidence binding after content analysis has already finished must not
+create a new content-analysis attempt.
+
+Checkpoints map completed item IDs to the hash of the saved notes artifact. A checkpoint proves
+only that bytes were saved; it does not validate the scientific explanation. Packaging copies
+the sanitized run state and event log into the reader. Manual Browser QA is stored separately in
+`qa-report.json`, and `build_report.md` is generated from the manifest, validator, and QA report.
 
 ## Coordinates
 
@@ -132,7 +168,7 @@ When `paper.experimental_data_status` is `absent`, omit every marker-level `expe
 
 The reading sidebar and the full figure/formula view consume the same marker. Keep concise orientation in the existing core fields and add teaching depth only where useful:
 
-For a figure, table, or key formula, keep recurring UI headings plain. Identify the source object once in the first sentence of `takeaway`, `how_to_read` (and the first `reading_steps` item when present), and `explanation`. Store the whole source-object label in `figure_label` (`Figure 2`, not `Figure 2A-C`); describe panel coverage in `panels` or the prose.
+For a figure, table, or key formula, keep recurring UI headings plain. Identify the source object in the first sentence of `takeaway` when ambiguity would otherwise remain, and name it again in later fields whenever clarity benefits. Do not require every subsection or reading step to repeat the same prefix. Store the whole source-object label in `figure_label` (`Figure 2`, not `Figure 2A-C`); describe panel coverage in `panels` or the prose.
 
 - `prerequisites`: complete-sentence background needed before the item can be understood;
 - `reading_steps`: ordered strings describing where to look or what to substitute first;
@@ -146,6 +182,83 @@ For a figure, table, or key formula, keep recurring UI headings plain. Identify 
 Do not fill every optional field mechanically. Use the fields that close a real reasoning gap. For a key figure, normally provide `prerequisites` or equivalent context, a reading sequence, panel/encoding detail, evidence boundaries, and specific source checks. For a key formula, normally provide `symbols`, derivation/use steps, applicability, and common misreadings.
 
 Use one `visual_bbox` containing the complete source object for every delivered figure, table, and formula. `bboxes` may still point to captions or supporting prose. Do not force a tall or narrow crop to full container width in the UI.
+
+## Teaching-audit artifact
+
+`teaching_audit.json` is a work artifact, not a second reader explanation and not a delivered UI
+schema. Initialize it after the first structural scan has created stable figure/table/formula marker
+IDs. Fill each audit item at the same time as its marker during the first source-object inspection.
+The audit stores compact links to the delivered marker; it must not repeat the explanation in an
+`answer` field.
+
+Each eligible marker has exactly one audit item:
+
+```json
+{
+  "marker_id": "p004-figure-4",
+  "page": 4,
+  "content_type": "figure",
+  "title": "Figure 4: ...",
+  "complexity": "multi_panel",
+  "audit_level": "full",
+  "audit_reason": "The trajectory panel supplies the state labels interpreted by the phase map.",
+  "full_audit_triggers": ["multi_panel", "multi_curve_or_condition", "reasoning_chain"],
+  "source_inventory": {
+    "components": ["left trajectory panel", "right phase diagram"],
+    "encodings_or_symbols": ["line color identifies relaxation time", "background color identifies long-time state"],
+    "numeric_or_condition_labels": ["four trajectory values in the legend"]
+  },
+  "learner_check": {
+    "object_and_question": {"note_field": "takeaway", "teaching_evidence": "Figure 4 比较三种边界终态"},
+    "reading_or_use_order": {"note_field": "how_to_read", "teaching_evidence": "先用左图四条轨迹，再读右图相图"},
+    "evidence_to_conclusion": {"note_field": "explanation", "teaching_evidence": "轨迹方向定义终态，右图再把终态推广到参数平面"},
+    "boundaries": {"note_field": "does_not_support", "teaching_evidence": "不能给出真实细胞中的发生概率"},
+    "prerequisites_and_variables": {"note_field": "prerequisites", "teaching_evidence": "τ 是环境松弛时间"},
+    "dependency_chain": {"note_field": "how_to_read", "teaching_evidence": "先用左图四条轨迹，再读右图相图"}
+  },
+  "coverage": [
+    {"source_element": "left trajectory panel", "status": "covered", "note_field": "how_to_read", "teaching_evidence": "先用左图四条轨迹", "note": "The cited excerpt tells the reader how to use the panel."},
+    {"source_element": "right phase diagram", "status": "covered", "note_field": "explanation", "teaching_evidence": "右图把长期终态映射到参数平面", "note": "The cited excerpt explains the panel's role."},
+    {"source_element": "line color identifies relaxation time", "status": "covered", "note_field": "explanation", "teaching_evidence": "四种颜色对应四个松弛时间", "note": "The encoding is decoded explicitly."},
+    {"source_element": "background color identifies long-time state", "status": "covered", "note_field": "how_to_read", "teaching_evidence": "背景颜色表示长期终态", "note": "The encoding is decoded explicitly."},
+    {"source_element": "four trajectory values in the legend", "status": "covered", "note_field": "explanation", "teaching_evidence": "τ=1.50、1.75、2.00、2.25", "note": "All four legend values are preserved."}
+  ],
+  "factual_checks": [
+    {"kind": "source_fidelity", "claim": "The legend contains four trajectories", "source": "original Figure 4 crop", "status": "verified"},
+    {"kind": "reasoning_fidelity", "claim": "The phase map uses the long-time states identified from the trajectories", "source": "Figure 4 and adjacent interpretation", "status": "verified"}
+  ],
+  "unresolved_source_limits": [],
+  "verdict": "pass",
+  "revision_summary": ""
+}
+```
+
+Allowed `complexity` values are `simple`, `multi_panel`, and `reasoning_heavy`. `audit_level` is
+`standard` or `full`. Use `full` when any `full_audit_triggers` value applies:
+`multi_panel`, `multi_curve_or_condition`, `reasoning_chain`, `main_claim`,
+`downstream_dependency`, `cross_page_context`, or `source_conflict`. `multi_panel` and
+`reasoning_heavy` complexity require the corresponding trigger and a full audit. A standard item
+still requires the four core learner links, complete source inventory coverage, and a
+`source_fidelity` factual check. A full item additionally requires `prerequisites_and_variables`,
+`dependency_chain`, and a `reasoning_fidelity` factual check.
+
+Coverage status is `covered`, `bounded_source_limit`, or `missing`. A bounded limit needs a specific
+reason/location; missing coverage cannot pass. Every inventory entry—components, encodings/symbols,
+and consequential numeric/condition labels—needs a coverage record naming a marker `note_field` and
+an exact `teaching_evidence` substring from that field. Factual-check `kind` is `source_fidelity`,
+`reasoning_fidelity`, or `source_limit`; status is `verified`, `corrected`, `unresolved`, or
+`contradicted`. `corrected` requires a revision summary; `unresolved` requires
+`pass_with_source_limit`; `contradicted` and `revise` prevent packaging.
+
+`teaching-audit-report.json` is generated by `teaching_audit.py check`. It hashes semantic teaching
+fields while ignoring deterministic evidence-binding coordinates. `build_reader.py` verifies that
+hash so any later change to teaching prose requires a new local check. This artifact is evidence
+that the self-audit ran; it is not independent expert validation.
+
+Every required `learner_check` links to a final marker field and an exact `teaching_evidence`
+substring from that field. This prevents a complete explanation from existing only in the hidden
+audit while the delivered reader remains a shallow annotation, without paying to generate the
+same answer twice.
 
 Allowed `content_type` values:
 

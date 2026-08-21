@@ -23,6 +23,8 @@ import pdfplumber
 from PIL import Image
 from pypdf import PdfReader
 
+from run_tracker import finish_stage, start_stage
+
 
 FORMULA_RE = re.compile(r"[=<>∑∫√±≤≥≈≃∂∇∞→←↔×÷]|\b(?:sin|cos|tan|exp|log)\s*\(")
 FORMULA_FRAGMENT_RE = re.compile(r"\(cid:\d+\)|[∆µγν∈∑]")
@@ -46,6 +48,7 @@ VISUAL_REFERENCE_RE = re.compile(
 )
 LONG_ALPHA_RE = re.compile(r"[A-Za-z]{30,}")
 GLUE_RE = re.compile(r"(?:[a-z]{3,}[A-Z][a-z]{2,}|[A-Za-z][,;:][A-Za-z]|[a-z]\.[A-Z])")
+LATEXIT_RE = re.compile(r"<latexit\b[^>]*>.*?</latexit>", re.IGNORECASE)
 LIGATURES = str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"})
 
 
@@ -67,6 +70,11 @@ def rounded_box(item: dict[str, Any]) -> dict[str, float]:
 
 
 def normalize_inline(text: str) -> str:
+    # Some publisher PDFs expose LaTeXML accessibility payloads as literal
+    # <latexit> tags followed by long base64-like data.  Preserve the location
+    # as a damaged mathematical fragment, but never allow the payload to enter
+    # readable prose, translation, or glued-word metrics.
+    text = LATEXIT_RE.sub(" � ", text)
     text = C0_RE.sub(" � ", text)
     text = text.translate(LIGATURES).replace("\u00a0", " ").replace("\u200b", "")
     text = re.sub(r"\s+", " ", text).strip()
@@ -122,11 +130,44 @@ def formula_like(text: str) -> bool:
 
 def source_quality_flags(text: str) -> list[str]:
     flags: list[str] = []
+    if LATEXIT_RE.search(text):
+        flags.append("latexit_artifact")
     if C0_RE.search(text):
         flags.append("control_character")
     if re.search(r"\(cid:\d+\)", text):
         flags.append("cid_artifact")
     return flags
+
+
+def formula_candidate_priority(text: str, quality_flags: list[str]) -> tuple[str, int, list[str]]:
+    """Rank formula candidates without discarding low-confidence or damaged source material."""
+    if quality_flags:
+        return "damaged", 0, list(quality_flags)
+    clean = normalize_inline(text)
+    score = 0
+    reasons: list[str] = []
+    if EQUATION_NUMBER_RE.search(clean):
+        score += 4
+        reasons.append("numbered_equation")
+    if "=" in clean:
+        score += 3
+        reasons.append("equality")
+    operator_count = len(FORMULA_RE.findall(clean))
+    if operator_count:
+        score += min(3, operator_count)
+        reasons.append("mathematical_operators")
+    if len(clean) <= 160:
+        score += 1
+        reasons.append("compact_display")
+    alpha_words = re.findall(r"[A-Za-z]{4,}", clean)
+    if len(alpha_words) >= 12:
+        score -= 2
+        reasons.append("prose_heavy")
+    if len(clean) > 220:
+        score -= 2
+        reasons.append("long_fragment")
+    priority = "high" if score >= 7 else "medium" if score >= 4 else "low"
+    return priority, score, reasons
 
 
 def canonical_visual_id(kind: str, number: str) -> str:
@@ -431,6 +472,7 @@ def main() -> int:
     parser.add_argument("pdf", help="Source PDF path")
     parser.add_argument("--out-dir", required=True, help="Output directory")
     parser.add_argument("--dpi", type=int, default=144, help="Render DPI, default 144")
+    parser.add_argument("--run-dir", help="Optional initialized run-tracking directory")
     args = parser.parse_args()
 
     started = time.perf_counter()
@@ -440,6 +482,10 @@ def main() -> int:
         raise SystemExit(f"PDF not found: {pdf_path}")
     if args.dpi < 96:
         raise SystemExit("DPI must be at least 96 for readable source pages.")
+
+    run_dir = Path(args.run_dir).resolve() if args.run_dir else None
+    if run_dir:
+        start_stage(run_dir, "extraction")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     rendered = render_pages(pdf_path, out_dir / "pages", args.dpi)
@@ -477,6 +523,12 @@ def main() -> int:
                 formula["id"] = f"p{page_number:03d}-formula-{index:02d}"
                 formula["quality_flags"] = source_quality_flags(formula.get("text", ""))
                 formula["source_integrity"] = "damaged" if formula["quality_flags"] else "pending_review"
+                priority, score, reasons = formula_candidate_priority(
+                    str(formula.get("text", "")), formula["quality_flags"]
+                )
+                formula["candidate_priority"] = priority
+                formula["candidate_score"] = score
+                formula["candidate_reasons"] = reasons
                 if formula["source_integrity"] == "damaged":
                     damaged_formula_count += 1
             formula_count += len(formulas)
@@ -509,6 +561,11 @@ def main() -> int:
     unmatched_visual_references = [
         item for item in visual_references if item["canonical_id"] not in candidate_canonical_ids
     ]
+    formula_priorities = {"high": 0, "medium": 0, "low": 0, "damaged": 0}
+    for page in pages:
+        for formula in page.get("formula_blocks", []):
+            priority = str(formula.get("candidate_priority", "low"))
+            formula_priorities[priority] = formula_priorities.get(priority, 0) + 1
     index = {
         "schema_version": "2.1",
         "source_pdf": str(pdf_path),
@@ -523,6 +580,7 @@ def main() -> int:
         "unmatched_visual_references": unmatched_visual_references,
         "formula_suspect_count": formula_count,
         "formula_damaged_count": damaged_formula_count,
+        "formula_candidate_priorities": formula_priorities,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     output = out_dir / "paper_index.json"
@@ -533,6 +591,14 @@ def main() -> int:
         f"unmatched visual references: {len(unmatched_visual_references)}; formula crops: {formula_count}"
     )
     print(f"Text quality signals: {all_quality}")
+    if run_dir:
+        finish_stage(
+            run_dir,
+            "extraction",
+            warnings=sum(int(value) for value in all_quality.values()),
+            note=f"{len(pages)} pages; {len(all_visuals)} visual candidates; {formula_count} formula candidates",
+        )
+        start_stage(run_dir, "context_indexing")
     return 0
 
 
