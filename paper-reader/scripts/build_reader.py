@@ -13,6 +13,16 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+from run_tracker import (
+    EVENTS_NAME,
+    STATE_NAME,
+    diagnostic_summary,
+    finish_stage,
+    load_state,
+    stage_elapsed,
+    start_stage,
+)
+from teaching_audit import AUDIT_SCHEMA_VERSION, teaching_notes_sha256
 from version_info import BUILDER_VERSION, SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION
 
 
@@ -66,6 +76,10 @@ def main() -> int:
     parser.add_argument("--paper-index", required=True)
     parser.add_argument("--notes", required=True)
     parser.add_argument("--translations", help="Optional translations JSON")
+    parser.add_argument(
+        "--teaching-audit-report",
+        help="Passing report from teaching_audit.py check; required for new full builds with figures/tables/formulas",
+    )
     destination = parser.add_mutually_exclusive_group(required=True)
     destination.add_argument("--out-dir", help="Exact reader directory (backward compatible)")
     destination.add_argument(
@@ -73,13 +87,50 @@ def main() -> int:
         help="Parent directory; creates <paper-title>-paper-reader-v<skill-version>",
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--run-dir", help="Optional initialized run-tracking directory")
     args = parser.parse_args()
+
+    run_dir = Path(args.run_dir).resolve() if args.run_dir else None
+    if run_dir:
+        start_stage(run_dir, "build")
 
     index_path = Path(args.paper_index).resolve()
     notes_path = Path(args.notes).resolve()
     translations_path = Path(args.translations).resolve() if args.translations else None
+    teaching_audit_path = (
+        Path(args.teaching_audit_report).resolve() if args.teaching_audit_report else None
+    )
+    if teaching_audit_path is None and args.out_dir:
+        existing_audit = Path(args.out_dir).resolve() / "teaching-audit-report.json"
+        if existing_audit.is_file():
+            teaching_audit_path = existing_audit
     paper = load_object(index_path)
     notes = load_object(notes_path)
+    eligible_teaching_markers = [
+        marker
+        for page in notes.get("pages", {}).values()
+        if isinstance(page, dict)
+        for marker in page.get("markers", [])
+        if isinstance(marker, dict) and marker.get("content_type") in {"figure", "table", "formula"}
+    ]
+    if args.output_root and eligible_teaching_markers and not teaching_audit_path:
+        raise SystemExit(
+            "A new full build containing figures/tables/formulas requires --teaching-audit-report"
+        )
+    teaching_audit = load_object(teaching_audit_path) if teaching_audit_path else None
+    if teaching_audit is not None:
+        if teaching_audit.get("audit_schema_version") != AUDIT_SCHEMA_VERSION:
+            raise SystemExit("Teaching audit report belongs to a different audit schema")
+        if teaching_audit.get("status") != "pass":
+            raise SystemExit("Teaching audit report is not passing")
+        expected_teaching_hash = teaching_notes_sha256(notes)
+        if teaching_audit.get("teaching_notes_sha256") != expected_teaching_hash:
+            raise SystemExit(
+                "Teaching content changed after the teaching audit; rerun teaching_audit.py check"
+            )
+        audit_generator = teaching_audit.get("generator", {})
+        if not isinstance(audit_generator, dict) or audit_generator.get("skill_version") != SKILL_VERSION:
+            raise SystemExit("Teaching audit report belongs to a different Skill version")
     translations = (
         load_object(translations_path, optional=True)
         if translations_path
@@ -156,6 +207,10 @@ def main() -> int:
     (out_dir / "reader-data.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    if teaching_audit_path:
+        packaged_audit = out_dir / "teaching-audit-report.json"
+        if teaching_audit_path != packaged_audit.resolve():
+            shutil.copy2(teaching_audit_path, packaged_audit)
     pending_validation = {
         "schema_version": SCHEMA_VERSION,
         "structure": "pending",
@@ -213,6 +268,24 @@ def main() -> int:
     run_metrics = notes.get("paper", {}).get("run_metrics", {})
     if not isinstance(run_metrics, dict):
         run_metrics = {}
+    tracked_state = None
+    if run_dir:
+        finish_stage(run_dir, "build")
+        tracked_state = load_state(run_dir)
+        for name in (STATE_NAME, EVENTS_NAME):
+            source = run_dir / name
+            if source.is_file():
+                shutil.copy2(source, out_dir / name)
+    context_indexing_seconds = (
+        stage_elapsed(tracked_state, "context_indexing")
+        if tracked_state
+        else run_metrics.get("context_indexing_seconds")
+    )
+    content_analysis_seconds = (
+        stage_elapsed(tracked_state, "content_analysis")
+        if tracked_state
+        else run_metrics.get("content_analysis_seconds")
+    )
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "generator": {
@@ -229,6 +302,11 @@ def main() -> int:
                 if translations_path and translations_path.is_file()
                 else None
             ),
+            "teaching_audit_report": (
+                {"name": teaching_audit_path.name, "sha256": sha256(teaching_audit_path)}
+                if teaching_audit_path
+                else None
+            ),
             "source_pdf": {"name": source_pdf.name, "sha256": sha256(source_pdf)},
         },
         "coverage": {
@@ -240,6 +318,7 @@ def main() -> int:
             "translation_partial_pages": partial_pages,
             "formula_suspect_blocks": packaged_paper.get("formula_suspect_count", 0),
             "formula_damaged_blocks": packaged_paper.get("formula_damaged_count", 0),
+            "formula_candidate_priorities": packaged_paper.get("formula_candidate_priorities", {}),
             "visual_candidates": len(visual_candidate_ids),
             "visual_candidates_covered": len(visual_candidate_ids & covered_visual_ids),
             "visual_candidates_excluded": len(visual_candidate_ids & excluded_visual_ids),
@@ -247,13 +326,42 @@ def main() -> int:
             "unmatched_visual_references": len(packaged_paper.get("unmatched_visual_references", [])),
         },
         "text_quality_at_build": packaged_paper.get("text_extraction", {}).get("quality", {}),
+        "teaching_audit": (
+            {
+                "audit_schema_version": teaching_audit.get("audit_schema_version"),
+                "status": teaching_audit.get("status"),
+                "scope": teaching_audit.get("scope"),
+                "teaching_notes_sha256": teaching_audit.get("teaching_notes_sha256"),
+                "coverage": teaching_audit.get("coverage", {}),
+                "warnings": len(teaching_audit.get("warnings", [])),
+            }
+            if teaching_audit
+            else {"status": "not_required_for_existing-reader_update"}
+        ),
         "timings_seconds": {
             "pdf_parse_and_render": paper.get("elapsed_seconds"),
-            "context_indexing": run_metrics.get("context_indexing_seconds"),
-            "content_analysis": run_metrics.get("content_analysis_seconds"),
+            "context_indexing": context_indexing_seconds,
+            "content_analysis": content_analysis_seconds,
             "packaging": round(time.perf_counter() - started, 3),
             "validation": None,
         },
+        "run_tracking": (
+            {
+                "enabled": True,
+                "state_file": STATE_NAME,
+                "events_file": EVENTS_NAME,
+                "timing_semantics": "stage wall-clock time; may include waiting or reconnection gaps",
+                "run_context": tracked_state.get("run_context", {}),
+                "stages": tracked_state.get("stages", {}),
+                "milestones": tracked_state.get("milestones", {}),
+                "diagnostics": diagnostic_summary(tracked_state),
+            }
+            if tracked_state
+            else {
+                "enabled": False,
+                "timing_semantics": "only script-local timings are available",
+            }
+        ),
         "model_usage": {
             "calls": None,
             "input_tokens": None,

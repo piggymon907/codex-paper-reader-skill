@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from version_info import SCHEMA_VERSION
+from version_info import SCHEMA_VERSION, SKILL_VERSION
 
 
 TRANSLATABLE_KINDS = {"prose", "heading", "caption"}
@@ -47,7 +47,9 @@ ROOT_OUTPUT_FILES = (
     "validation-report.json",
     "validation-status.js",
     "run-status.js",
+    "build_report.md",
 )
+TRACKING_OUTPUT_FILES = ("run-state.json", "run-events.jsonl", "qa-report.json")
 
 
 def load_object(path: Path, *, optional: bool = False) -> dict[str, Any]:
@@ -304,6 +306,14 @@ def install_staging(staging: Path, out_dir: Path, prior_asset_hashes: dict[str, 
         temp = destination.with_name(f".{destination.name}.translation-update.tmp")
         shutil.copy2(source, temp)
         os.replace(temp, destination)
+    for name in TRACKING_OUTPUT_FILES:
+        source = staging / name
+        if not source.is_file():
+            continue
+        destination = out_dir / name
+        temp = destination.with_name(f".{destination.name}.translation-update.tmp")
+        shutil.copy2(source, temp)
+        os.replace(temp, destination)
 
 
 def apply_patch(args: argparse.Namespace) -> int:
@@ -326,7 +336,7 @@ def apply_patch(args: argparse.Namespace) -> int:
     prior_assets = tree_hashes(out_dir / "assets")
     prior_output_files = {
         name: (out_dir / name).read_bytes() if (out_dir / name).is_file() else None
-        for name in ROOT_OUTPUT_FILES
+        for name in ROOT_OUTPUT_FILES + TRACKING_OUTPUT_FILES
     }
     script_dir = Path(__file__).resolve().parent
     build_script = script_dir / "build_reader.py"
@@ -336,7 +346,7 @@ def apply_patch(args: argparse.Namespace) -> int:
     staging = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.translation-build-", dir=staging_parent))
     try:
         atomic_write(translations_path, json_bytes(merged))
-        run_checked([
+        build_command = [
             sys.executable,
             str(build_script),
             "--paper-index", str(index_path),
@@ -344,7 +354,29 @@ def apply_patch(args: argparse.Namespace) -> int:
             "--translations", str(translations_path),
             "--out-dir", str(staging),
             "--force",
-        ])
+        ]
+        existing_audit = out_dir / "teaching-audit-report.json"
+        if existing_audit.is_file():
+            build_command.extend(["--teaching-audit-report", str(existing_audit)])
+        run_checked(build_command)
+        prior_state_path = out_dir / "run-state.json"
+        if prior_state_path.is_file():
+            prior_state = load_object(prior_state_path)
+            if prior_state.get("skill_version") == SKILL_VERSION:
+                for name in ("run-state.json", "run-events.jsonl", "qa-report.json"):
+                    source = out_dir / name
+                    if source.is_file():
+                        shutil.copy2(source, staging / name)
+                prior_manifest = load_object(out_dir / "run_manifest.json", optional=True)
+                staged_manifest_path = staging / "run_manifest.json"
+                staged_manifest = load_object(staged_manifest_path)
+                if prior_manifest.get("run_tracking", {}).get("enabled"):
+                    staged_manifest["run_tracking"] = prior_manifest["run_tracking"]
+                    for key in ("pdf_parse_and_render", "context_indexing", "content_analysis"):
+                        prior_value = prior_manifest.get("timings_seconds", {}).get(key)
+                        if prior_value is not None:
+                            staged_manifest.setdefault("timings_seconds", {})[key] = prior_value
+                    atomic_write(staged_manifest_path, json_bytes(staged_manifest))
         run_checked([sys.executable, str(validate_script), "--strict", str(staging)])
         install_staging(staging, out_dir, prior_assets)
     except Exception:

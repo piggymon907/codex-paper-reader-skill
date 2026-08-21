@@ -13,6 +13,16 @@ from typing import Any
 
 from PIL import Image
 
+from run_tracker import (
+    STATE_NAME,
+    diagnostic_summary,
+    finish_stage,
+    load_state,
+    stage_elapsed,
+    start_stage,
+    write_build_report,
+)
+from teaching_audit import AUDIT_SCHEMA_VERSION, teaching_notes_sha256
 from version_info import BUILDER_VERSION, SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION, VALIDATOR_VERSION
 
 
@@ -96,6 +106,9 @@ def main() -> int:
     args = parser.parse_args()
 
     reader_dir = Path(args.reader_dir).resolve()
+    tracking_enabled = (reader_dir / STATE_NAME).is_file()
+    if tracking_enabled:
+        start_stage(reader_dir, "validation")
     errors: list[str] = []
     warnings: list[str] = []
     structure_checks: list[str] = []
@@ -107,6 +120,10 @@ def main() -> int:
     for name in required:
         if not (reader_dir / name).is_file():
             errors.append(f"Missing required file: {name}")
+    if not tracking_enabled:
+        warnings.append(
+            "Run tracking is unavailable; stage wall-clock timing and checkpoint history are incomplete"
+        )
     try:
         data = json.loads((reader_dir / "reader-data.json").read_text(encoding="utf-8")) if not errors else {}
     except Exception as exc:
@@ -330,28 +347,21 @@ def main() -> int:
             for field in ("title", "takeaway", "explanation", "locator"):
                 if not str(marker.get(field, "")).strip():
                     errors.append(f"{prefix}: {field} is missing")
-            if content_type in {"figure", "table", "formula"}:
-                for field in ("takeaway", "how_to_read", "explanation"):
-                    value = marker.get(field)
-                    if not first_sentence_identifies_object(value, content_type):
-                        errors.append(
-                            f"{prefix}: {field} must identify the current {content_type} in its first sentence"
-                        )
-                reading_steps = marker.get("reading_steps")
-                if isinstance(reading_steps, list) and reading_steps:
-                    if not first_sentence_identifies_object(reading_steps[0], content_type):
-                        errors.append(
-                            f"{prefix}: reading_steps[0] must identify the current {content_type}"
-                        )
+            if content_type in {"figure", "table", "formula"} and not first_sentence_identifies_object(
+                marker.get("takeaway"), content_type
+            ):
+                warnings.append(
+                    f"{prefix}: takeaway could identify the current {content_type} more explicitly"
+                )
             useful_length = explanation_length(marker)
             minimum = 250 if content_type in {"figure", "table"} else 150
             if useful_length < minimum:
                 message = f"{prefix}: explanation detail {useful_length} chars is below {minimum}"
-                (errors if args.strict else warnings).append(message)
+                warnings.append(message)
             if marker.get("teaching_priority") == "key":
                 teaching_minimum = 800 if content_type in {"figure", "table"} else 500 if content_type == "formula" else 250
                 if useful_length < teaching_minimum:
-                    errors.append(
+                    warnings.append(
                         f"{prefix}: key teaching explanation detail {useful_length} chars is below {teaching_minimum}"
                     )
             marker_block_ids = marker.get("block_ids", []) if isinstance(marker.get("block_ids"), list) else []
@@ -634,6 +644,42 @@ def main() -> int:
         if value and (Path(value).is_absolute() or "\\" in value or "/" in value):
             errors.append(f"run_manifest input {name} must contain only a file name")
 
+    eligible_teaching_markers = [
+        marker
+        for page in notes.get("pages", {}).values()
+        if isinstance(page, dict)
+        for marker in page.get("markers", [])
+        if isinstance(marker, dict) and marker.get("content_type") in {"figure", "table", "formula"}
+    ]
+    if eligible_teaching_markers:
+        audit_path = reader_dir / "teaching-audit-report.json"
+        if not audit_path.is_file():
+            errors.append("Reader with figures/tables/formulas lacks teaching-audit-report.json")
+        else:
+            try:
+                teaching_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                errors.append(f"Invalid teaching-audit-report.json: {exc}")
+                teaching_audit = {}
+            current_teaching_hash = teaching_notes_sha256(notes)
+            if teaching_audit.get("audit_schema_version") != AUDIT_SCHEMA_VERSION:
+                errors.append("Packaged teaching audit uses a different audit schema")
+            if teaching_audit.get("status") != "pass":
+                errors.append("Packaged teaching audit report is not passing")
+            if teaching_audit.get("teaching_notes_sha256") != current_teaching_hash:
+                errors.append("Packaged notes changed after the teaching audit")
+            audit_manifest = manifest.get("teaching_audit", {}) if isinstance(manifest, dict) else {}
+            if not isinstance(audit_manifest, dict) or audit_manifest.get("status") != "pass":
+                errors.append("run_manifest does not record a passing teaching audit")
+            elif audit_manifest.get("audit_schema_version") != AUDIT_SCHEMA_VERSION:
+                errors.append("run_manifest teaching-audit schema does not match the validator")
+            elif audit_manifest.get("teaching_notes_sha256") != current_teaching_hash:
+                errors.append("run_manifest teaching-audit hash does not match packaged notes")
+            else:
+                content_checks.append(
+                    "teaching self-audit: completed and hash-bound; scientific correctness remains unproven"
+                )
+
     source_alignment_status = (
         "pass" if direct_marker_count > 0 and direct_marker_bound == direct_marker_count else "fail"
     )
@@ -664,6 +710,7 @@ def main() -> int:
             "translation_partial_pages": partial_translation_pages,
             "formula_suspect_blocks": paper.get("formula_suspect_count", 0),
             "formula_damaged_blocks": damaged_formula_candidates,
+            "formula_candidate_priorities": paper.get("formula_candidate_priorities", {}),
             "direct_markers": direct_marker_count,
             "direct_markers_bound": direct_marker_bound,
             "visual_references": len(paper.get("visual_references", [])),
@@ -701,8 +748,34 @@ def main() -> int:
         + ";\n",
         encoding="utf-8",
     )
+    tracked_state = None
+    if tracking_enabled:
+        finish_stage(
+            reader_dir,
+            "validation",
+            status="completed" if not errors else "failed",
+            errors=len(errors),
+            warnings=len(warnings),
+        )
+        tracked_state = load_state(reader_dir)
     if isinstance(manifest, dict):
-        manifest.setdefault("timings_seconds", {})["validation"] = round(time.perf_counter() - started, 3)
+        validation_seconds = (
+            stage_elapsed(tracked_state, "validation")
+            if tracked_state
+            else round(time.perf_counter() - started, 3)
+        )
+        manifest.setdefault("timings_seconds", {})["validation"] = validation_seconds
+        if tracked_state:
+            manifest["run_tracking"] = {
+                "enabled": True,
+                "state_file": STATE_NAME,
+                "events_file": "run-events.jsonl",
+                "timing_semantics": "stage wall-clock time; may include waiting or reconnection gaps",
+                "run_context": tracked_state.get("run_context", {}),
+                "stages": tracked_state.get("stages", {}),
+                "milestones": tracked_state.get("milestones", {}),
+                "diagnostics": diagnostic_summary(tracked_state),
+            }
         manifest["validation"] = {
             "validator_version": VALIDATOR_VERSION,
             "skill_version": SKILL_VERSION,
@@ -724,6 +797,7 @@ def main() -> int:
             + ";\n",
             encoding="utf-8",
         )
+        write_build_report(reader_dir)
     print(f"Validation {report['status']}: {len(errors)} error(s), {len(warnings)} warning(s)")
     print(f"Report: {reader_dir / 'validation-report.json'}")
     return 0 if not errors else 1

@@ -9,6 +9,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+from run_tracker import (
+    finish_stage,
+    finish_stage_if_running,
+    load_state,
+    record_milestone,
+    stage_elapsed,
+    start_stage,
+)
+
 
 def load_object(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -71,6 +80,7 @@ def main() -> int:
     parser.add_argument("--in-place", action="store_true", help="Replace --notes atomically")
     parser.add_argument("--replace", action="store_true", help="Re-evaluate existing block_ids")
     parser.add_argument("--max-blocks", type=int, default=3)
+    parser.add_argument("--run-dir", help="Optional initialized run-tracking directory")
     args = parser.parse_args()
 
     if args.in_place == bool(args.out):
@@ -81,8 +91,25 @@ def main() -> int:
     index_path = Path(args.paper_index).resolve()
     notes_path = Path(args.notes).resolve()
     output_path = notes_path if args.in_place else Path(args.out).resolve()
+    run_dir = Path(args.run_dir).resolve() if args.run_dir else None
+    if run_dir:
+        tracked = load_state(run_dir)
+        content_stage = tracked.get("stages", {}).get("content_analysis", {})
+        content_running = (
+            isinstance(content_stage, dict) and content_stage.get("status") == "running"
+        )
+        finish_stage_if_running(run_dir, "targeted_revision")
+        if content_running:
+            record_milestone(run_dir, "analysis_ready_for_binding")
+        finish_stage_if_running(run_dir, "content_analysis")
+        start_stage(run_dir, "evidence_binding")
     index = load_object(index_path)
     notes = load_object(notes_path)
+    if run_dir:
+        metrics = notes.setdefault("paper", {}).setdefault("run_metrics", {})
+        metrics["content_analysis_seconds"] = stage_elapsed(
+            load_state(run_dir), "content_analysis"
+        )
     pages = page_map(index)
     counts = {"bound": 0, "kept": 0, "missing-source": 0, "ambiguous": 0, "not-found": 0}
     unresolved: list[dict[str, Any]] = []
@@ -126,6 +153,13 @@ def main() -> int:
             f"{item['status']} ({item['claim_status']})"
         )
     print(f"Wrote: {output_path}")
+    if run_dir:
+        finish_stage(
+            run_dir,
+            "evidence_binding",
+            errors=len(unresolved),
+            note=f"{counts['bound']} bound; {counts['kept']} kept; {len(unresolved)} unresolved",
+        )
     return 0
 
 

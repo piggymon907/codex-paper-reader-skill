@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
+from run_tracker import finish_stage_if_running, load_state, stage_elapsed, start_stage
 from version_info import SCHEMA_VERSION
 
 
@@ -14,6 +15,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paper-index", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--run-dir", help="Optional initialized run-tracking directory")
     args = parser.parse_args()
 
     index_path = Path(args.paper_index).resolve()
@@ -58,6 +60,18 @@ def main() -> int:
             for page in pages
         },
     }
+    run_dir = Path(args.run_dir).resolve() if args.run_dir else None
+    if run_dir:
+        finish_stage_if_running(
+            run_dir,
+            "context_indexing",
+            note=f"Reviewed index before creating notes skeleton for {len(pages)} pages",
+        )
+        tracked = load_state(run_dir)
+        result["paper"]["run_metrics"]["context_indexing_seconds"] = stage_elapsed(
+            tracked, "context_indexing"
+        )
+        start_stage(run_dir, "content_analysis")
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
