@@ -1,95 +1,102 @@
 # Codex Paper Reader Skill
 
-English | [简体中文](README_zh-CN.md)
+简体中文 | [English](README_en.md)
 
-`paper-reader` builds a local, traceable reader for scientific PDFs. It keeps the rendered PDF page as the visual source of truth and adds page overviews, coordinate-bound annotations, detailed figure/table teaching, formula explanations, optional page-scoped Chinese translations, and context-rich follow-up questions.
+`paper-reader` 用于为科研 PDF 构建本地、可追溯的交互式阅读器。它把原始 PDF 页面作为视觉依据，并提供逐页导读、坐标绑定批注、图表教学、公式精讲、可选的逐页中译以及携带证据上下文的提问模板。
 
-Current release: **2.7.1 (beta)**
+当前版本：**2.7.1（beta）**
 
-> This project is an independent community Skill for Codex. It is not an official OpenAI project.
 
-## What it does
+## 下载与版本
 
-- Renders every provided PDF page and preserves the original layout.
-- Maps explanations to exact page coordinates and verbatim source blocks.
-- Provides reading, figure-teaching, and formula-teaching views.
-- Explains every reviewed scientific figure/table and key formula without generating replacement artwork.
-- Keeps Chinese translation optional and formula-safe.
-- Prepares follow-up questions with the paper title, page, marker, source excerpt, explanation, and evidence status.
-- Shows an optional **查实验数据来源** action only when a reviewed marker actually uses experimental measurements or has a specific unresolved experimental-data lead.
+- [下载最新版 v2.7.1 安装包](https://github.com/piggymon907/codex-paper-reader-skill/releases/download/v2.7.1/paper-reader-v2.7.1.zip)
+- [查看全部版本与更新说明](https://github.com/piggymon907/codex-paper-reader-skill/releases)
+- [查看旧版 v2.4.0](https://github.com/piggymon907/codex-paper-reader-skill/releases/tag/v2.4.0)
 
-The experimental-data action does not automatically browse or download anything during reader construction. When selected, it prepares a focused follow-up that excludes simulations, theoretical calculations, model outputs, code, and literature-only parameters.
+下载 ZIP 后，可以直接让 Codex 从该压缩包安装 Skill。新用户建议使用标记为 **Latest** 的版本。
 
-## What changed in 2.7.1
+## 主要功能
 
-- Uses one source-bound teaching object for both the reading sidebar and the expanded figure/formula view, avoiding duplicate generation.
-- Applies a standard/full teaching audit during the first explanation pass and repairs only failed objects.
-- Records resumable checkpoints, coarse wall-clock analysis milestones, targeted-revision time, and known model/run settings without adding another model pass.
-- Keeps per-paper browser QA to a short content/layout smoke test; full UI regression is reserved for interface or schema changes.
-- Reports audit-trigger and teaching-length distributions for diagnosis only; they are not scientific-quality scores or hard word-count gates.
+- 渲染用户提供的全部 PDF 页面，保留原始版式、公式与图表。
+- 把解释绑定到准确的页码、页面坐标和逐字原文证据。
+- 提供阅读模式、图解模式和公式精讲模式。
+- 对已审阅的每张科研图表和关键公式进行详细解释，不重新生成替代图片。
+- 中文翻译按需生成，并要求保留变量、单位、引用号与公式。
+- 提问时自动整理论文标题、页码、marker、原文摘录、当前解释和证据状态。
+- 仅当某个已审阅内容确实使用实验测量数据，或存在明确但尚待核实的实验数据线索时，显示 **查实验数据来源** 操作。
 
-## Install
+默认构建阅读器时不会自动联网、下载数据或追踪全部参考文献。“查实验数据来源”只会准备一条范围明确的后续问题，并明确排除模拟结果、理论计算、模型输出、代码和仅来自文献的参数。
 
-Ask Codex to install the skill from this repository's `paper-reader` directory:
+## 2.7.1 更新要点
+
+- 阅读侧边栏与展开后的图表/公式教学共用同一个原文绑定对象，避免重复生成两套解释。
+- 在第一次解释过程中完成 standard/full 分级教学检查；只有失败对象才定点修正。
+- 记录可恢复 checkpoint、粗粒度墙钟分析阶段、定点返工时间及已知模型设置，不增加第二轮模型审读。
+- 每篇论文只做短时内容与版式 smoke test；完整 UI 回归仅在界面或 schema 改变时运行。
+- 记录审计触发原因和教学文字长度分布，仅用于诊断，不作为科学质量评分或硬性字数门槛。
+
+## 安装
+
+可以直接让 Codex 安装本仓库中的 `paper-reader` 目录：
 
 ```text
-Install the paper-reader skill from
+请从下面的 GitHub 目录安装 paper-reader Skill：
 https://github.com/piggymon907/codex-paper-reader-skill/tree/main/paper-reader
 ```
 
-Or copy the `paper-reader` directory into:
+也可以把 `paper-reader` 文件夹复制到：
 
 ```text
 $CODEX_HOME/skills/paper-reader
 ```
 
-Restart or refresh Codex after a manual installation if the skill does not appear immediately.
+手动复制后如果 Skill 没有立即出现，请重启或刷新 Codex。
 
-The GitHub repository is arranged so Codex can install the `paper-reader` subdirectory directly; the repository-level README and license are not copied into the installed Skill.
+仓库采用“根目录放用户说明、`paper-reader/` 放可安装 Skill”的结构，因此 Codex 可以直接安装子目录，而不会把仓库 README 和许可证复制进 Skill。
 
-## Runtime requirements
+## 运行依赖
 
-Codex Desktop may already provide the required workspace runtime. For a separate Python environment, install:
+Codex Desktop 通常会提供所需的工作区运行环境。如果使用独立 Python 环境，请安装：
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-The extraction workflow also requires Poppler's `pdftoppm` command on `PATH`. The Skill instructions tell Codex to use its bundled PDF runtime when available and to report a missing dependency instead of silently changing the workflow.
+PDF 提取流程还需要 `PATH` 中存在 Poppler 的 `pdftoppm` 命令。Skill 会优先使用 Codex 提供的 PDF 运行环境；如果依赖缺失，应明确报告，而不是静默切换到不可靠的工作流。
 
-## Use
+## 使用示例
 
-Attach a scientific PDF and ask, for example:
+附上科研 PDF 后，可以这样请求：
 
 ```text
-Use $paper-reader to build a complete reader for this paper. Explain every figure and key formula. Do not translate unless I ask.
+请使用 $paper-reader 为这篇论文生成完整阅读器。详细解释每张图和关键公式；除非我另行要求，否则不要翻译。
 ```
 
-For an existing reader, a page-scoped translation request uses the faster translation-patch workflow rather than rebuilding and rereading the entire paper.
+如果阅读器已经生成，逐页翻译会走更快的补丁流程，不会重新构建或重新分析整篇论文。
 
-## Output
+## 输出
 
-A normal build creates a paper-specific directory such as:
+正常构建会生成以论文标题和版本号命名的目录，例如：
 
 ```text
 Paper-Title-paper-reader-v2.7.1/
 ```
 
-Open its `index.html` in a local browser. The output is static and portable as long as the complete directory is kept together.
+使用本地浏览器打开其中的 `index.html` 即可。输出是静态、可携带的；分享时需要保留完整目录结构。
 
-## Scope and limitations
+## 范围与限制
 
-- Structural validation checks packaging, source alignment, text quality, and declared coverage. It does not prove the scientific interpretation correct.
-- The main PDF and supplements actually supplied by the user define the default evidence scope.
-- The Skill does not automatically audit missing supplements, datasets, code, cited papers, or the complete reference list.
-- Formal quotation, fragile formulas, priority claims, and consequential conclusions still require checking the original PDF.
-- PDF extraction quality varies. The build must stop or quarantine unsupported text rather than present damaged text as reliable prose.
+- 结构验证会检查打包、证据绑定、文本质量和声明的覆盖范围，但不能证明科学解释本身一定正确。
+- 默认证据范围仅包括用户实际提供的主 PDF 与补充材料。
+- Skill 不会自动审查未提供的补充材料、数据集、代码、引用论文或全部参考文献。
+- 正式引用、脆弱公式、优先权判断和后果重大的结论仍应回到原始 PDF 核对。
+- PDF 提取质量因论文而异；不可靠文本应停止使用或隔离标记，不能作为可信正文展示。
 
-## Privacy and network behavior
+## 隐私与联网行为
 
-The packaged Skill contains no telemetry and the normal reader build does not make external network requests. Reader files remain local. A user-triggered follow-up may ask Codex to research a specific experimental-data source; any later web access is part of that explicit follow-up, not the default build.
+发布包不包含遥测。常规阅读器构建不会发起外部网络请求，所有阅读器文件保留在本地。只有用户主动触发后续问题时，Codex 才可能根据该问题查询特定实验数据来源；这不属于默认构建流程。
 
-## Repository layout
+## 仓库结构
 
 ```text
 paper-reader/
@@ -100,9 +107,9 @@ paper-reader/
 └── scripts/
 ```
 
-The repository root contains user-facing installation material; the Skill directory contains only files required by the Skill itself.
+仓库根目录只放面向用户的安装与许可说明；`paper-reader` 目录只包含 Skill 运行所需文件。
 
-## License
+## 许可证
 
-MIT. See [LICENSE](LICENSE).
+MIT，详见 [LICENSE](LICENSE)。
 
